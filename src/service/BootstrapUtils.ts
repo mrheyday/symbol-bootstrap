@@ -19,6 +19,7 @@ const exec = util.promisify(require('child_process').exec);
 const logger: Logger = LoggerFactory.getLogger(LogType.System);
 
 export class BootstrapUtils {
+    public static workingDir = 'config';
     private static presetInfoLogged = false;
     private static pulledImages: string[] = [];
 
@@ -76,11 +77,22 @@ export class BootstrapUtils {
         }
     }
 
+    public static async createImageUsingExec(targetFolder: string, dockerFile: string, tag: string): Promise<string> {
+        const runCommand = `docker build -f ${dockerFile} ${targetFolder} -t ${tag}`;
+        logger.info(`Creating image image '${tag}' from ${dockerFile}`);
+        return this.exec(runCommand);
+    }
+
     public static async runImageUsingExec(image: string, userId: string, cmds: string[], binds: string[]): Promise<string> {
         const volumes = binds.map((b) => `-v ${b}`).join(' ');
         const userParam = userId ? `-u ${userId}` : '';
         const runCommand = `docker run --rm ${userParam} ${volumes} ${image} ${cmds.map((a) => `"${a}"`).join(' ')}`;
         logger.info(`Running image using Exec: ${image} ${cmds.join(' ')}`);
+        return this.exec(runCommand);
+    }
+
+    public static async exec(runCommand: string): Promise<string> {
+        logger.info(`Running command: ${runCommand}`);
         const { stdout } = await exec(runCommand);
         return stdout;
     }
@@ -247,7 +259,7 @@ export class BootstrapUtils {
             return BootstrapUtils.dockerUserId;
         }
         try {
-            const { stdout }: { stdout: string } = await exec('echo $(id -u):$(id -g)');
+            const stdout = await this.exec('echo $(id -u):$(id -g)');
             logger.info(`User for docker resolved: ${stdout}`);
             const user = stdout.trim();
             BootstrapUtils.dockerUserId = user;

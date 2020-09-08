@@ -13,7 +13,7 @@ import * as _ from 'lodash';
 /**
  * params necessary to run the docker-compose network.
  */
-export type RunParams = { target: string; daemon?: boolean; build?: boolean; timeout?: number };
+export type RunParams = { target: string; daemon?: boolean; build?: boolean; timeout?: number; service?: string };
 
 const logger: Logger = LoggerFactory.getLogger(LogType.System);
 
@@ -29,6 +29,9 @@ export class RunService {
         }
         if (this.params.build) {
             basicArgs.push('--build');
+        }
+        if (this.params.service) {
+            basicArgs.push(this.params.service);
         }
         await this.basicRun(basicArgs, false);
         if (this.params.daemon) {
@@ -90,7 +93,8 @@ export class RunService {
 
         await Promise.all(
             volumenList.map(async (v) => {
-                await BootstrapUtils.mkdir(join(this.params.target, `docker`, v));
+                const volumenPath = join(this.params.target, `docker`, v);
+                if (!existsSync(volumenPath)) await BootstrapUtils.mkdir(volumenPath);
             }),
         );
 

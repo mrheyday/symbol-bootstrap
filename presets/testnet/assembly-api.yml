@@ -21,8 +21,8 @@ nodes:
       enableAutoSyncCleanup: false
       openPort: true
 gateways:
-    - apiNodeConfigPath: '/usr/local/share/symbol/api-node-config'
-      name: 'rest-gateway'
+    - name: 'rest-gateway'
+      apiNodeName: 'api-node'
       apiNodeHost: 'api-node'
       apiNodeBrokerHost: 'api-broker'
       description: 'catapult public test network'

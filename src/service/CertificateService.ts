@@ -3,12 +3,14 @@ import { BootstrapUtils } from './BootstrapUtils';
 import LoggerFactory from '../logger/LoggerFactory';
 import Logger from '../logger/Logger';
 import { LogType } from '../logger/LogType';
-import { resolve } from 'path';
+import { join, resolve } from 'path';
 import { CertificatePair, ConfigPreset } from '../model';
 
 type CertificateParams = ConfigParams;
 
 const logger: Logger = LoggerFactory.getLogger(LogType.System);
+
+const workingDir = BootstrapUtils.workingDir;
 
 export class CertificateService {
     constructor(private readonly root: string, protected readonly params: CertificateParams) {}
@@ -38,7 +40,7 @@ export class CertificateService {
         );
         const symbolServerToolsImage = presetData.symbolServerToolsImage;
         const copyFrom = `${this.root}/config/cert`;
-        const target = `${this.params.target}/config/${name}/resources/cert`;
+        const target = join(this.params.target, workingDir, name, 'userconfig', 'resources', 'cert');
         await BootstrapUtils.mkdir(target);
         const generatedContext = { name };
         const templateContext: any = { ...presetData, ...generatedContext };

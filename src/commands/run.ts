@@ -18,6 +18,11 @@ export default class Run extends Command {
             description:
                 'If provided, docker-compose will run with -d (--detached) and this command will wait unit server is running before returning',
         }),
+        service: flags.string({
+            char: 's',
+            description: 'If you are starting a particular service, example rest-gateway, db, node-peer-0',
+        }),
+
         build: flags.boolean({
             char: 'b',
             description: 'If provided, docker-compose will run with -b (--build)',

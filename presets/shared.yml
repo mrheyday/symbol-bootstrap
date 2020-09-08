@@ -66,6 +66,11 @@ symbolServerToolsImage: symbolplatform/symbol-server:tools-gcc-0.9.6.4
 symbolServerImage: symbolplatform/symbol-server:gcc-0.9.6.4
 symbolRestImage: symbolplatform/symbol-rest:1.2.0
 mongoImage: mongo:4.2.6-bionic
+transactionsDirectory: './transactions'
+binDirectory: ./seed
+certificateDirectory: ./userconfig/resources/cert
+dataDirectory: ./data
+enableDelegatedHarvestersAutoDetection: true
 
 # node default info
 
@@ -117,3 +122,5 @@ maxReadRateMonitoringTotalSize: 100MB
 
 throttlingBurst: 35
 throttlingRate: 20
+restLoggingFilename: /symbol-workdir/logs/catapult-rest.log
+apiNodeConfigPath: /symbol-workdir/api-node-config

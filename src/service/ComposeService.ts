@@ -7,20 +7,22 @@ import { join } from 'path';
 import { DockerCompose, DockerComposeService } from '../model/DockerCompose';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs');
-export type ComposeParams = { target: string; user?: string; reset?: boolean };
+export type ComposeParams = { target: string; user?: string; reset?: boolean; aws?: boolean };
 
 const logger: Logger = LoggerFactory.getLogger(LogType.System);
 
+const workingDir = BootstrapUtils.workingDir;
+
 export class ComposeService {
-    public static defaultParams: ComposeParams = { target: 'target', user: 'current', reset: false };
+    public static defaultParams: ComposeParams = { target: 'target', user: 'current', reset: false, aws: false };
 
     constructor(private readonly root: string, protected readonly params: ComposeParams) {}
 
-    public async run(passedPresetData?: ConfigPreset): Promise<void> {
+    public async run(passedPresetData?: ConfigPreset): Promise<string> {
         const presetData = passedPresetData ?? BootstrapUtils.loadExistingPresetData(this.params.target);
 
-        const workingDir = process.cwd();
-        const target = join(workingDir, this.params.target);
+        const currentDir = process.cwd();
+        const target = join(currentDir, this.params.target);
         const targetDocker = join(target, `docker`);
         if (this.params.reset) {
             BootstrapUtils.deleteFolder(targetDocker);
@@ -29,14 +31,14 @@ export class ComposeService {
         const dockerFile = join(targetDocker, 'docker-compose.yml');
         if (fs.existsSync(dockerFile)) {
             logger.info(dockerFile + ' already exist. Reusing. (run -r to reset)');
-            return;
+            return dockerFile;
         }
 
         await BootstrapUtils.mkdir(join(this.params.target, 'state'));
         await BootstrapUtils.mkdir(targetDocker);
         await BootstrapUtils.generateConfiguration(presetData, join(this.root, 'config', 'docker'), targetDocker);
 
-        const user: string | undefined = await this.resolveUser();
+        const user: string | undefined = this.params.aws ? undefined : await this.resolveUser();
 
         const vol = (hostFolder: string, imageFolder: string): string => {
             return hostFolder + ':' + imageFolder;
@@ -46,87 +48,143 @@ export class ComposeService {
 
         const services: Record<string, DockerComposeService> = {};
 
-        (presetData.databases || []).forEach((n) => {
-            services[n.name] = {
-                image: presetData.mongoImage,
-                user,
-                command: `bash -c "mongod --dbpath=/dbdata --bind_ip=${n.name}"`,
-                stop_signal: 'SIGINT',
-                ports: n.openPort ? ['27017:27017'] : [],
-                volumes: [vol('../data/mongo', '/dbdata:rw')],
-            };
-
-            services[n.name + '-init'] = {
-                image: presetData.mongoImage,
-                user,
-                command: 'bash -c "/bin/bash /userconfig/mongors.sh && touch /state/mongo-is-setup"',
-                volumes: [vol(`./mongo`, `/userconfig/:ro`), vol('../data/mongo', '/dbdata:rw'), vol('../state', '/state')],
-                depends_on: [n.name],
-            };
-        });
-
-        (presetData.nodes || []).forEach((n) => {
-            const nodeService = {
-                build: `dockerfiles/catapult`,
-                user,
-                command: `bash -c "/bin/bash /userconfig/runServerRecover.sh  ${n.name} && /bin/bash /userconfig/startServer.sh ${n.name}"`,
-                stop_signal: 'SIGINT',
-                depends_on: [] as string[],
-                restart: 'on-failure:2',
-                ports: n.openBrokerPort ? ['7900:7900'] : [],
-                volumes: [
-                    vol(`./bin/bash`, `/bin-mount`),
-                    vol(`../config/${n.name}/resources/`, `/userconfig/resources/`),
-                    vol('../data/' + n.name, '/data:rw'),
-                    vol('../data/nemesis-data', '/nemesis-data:rw'),
-                    vol('../state', '/state'),
-                ],
-            };
-            if (n.databaseHost) {
-                nodeService.depends_on.push(n.databaseHost + '-init');
+        const resolvePorts = (internalPort: number, openPort: number | undefined | boolean | string): string[] => {
+            if (!openPort) {
+                return [];
             }
-            services[n.name] = nodeService;
-            if (n.brokerHost) {
-                services[n.brokerHost] = {
-                    build: `dockerfiles/catapult`,
+            if (openPort === true || openPort === 'true') {
+                return [`${internalPort}:${internalPort}`];
+            }
+            return [`${openPort}:${internalPort}`];
+        };
+
+        const resolveImage = async (
+            serviceName: string,
+            image: string,
+            volumes: string[],
+        ): Promise<{ image: string; volumes: string[] | undefined }> => {
+            if (this.params.aws) {
+                const repository = 'nem-repository';
+                const dockerfileContent = `FROM docker.io/${image}\n\n${volumes
+                    .map((v) => {
+                        const parts = v.split(':');
+                        return `ADD ${parts[0].replace('../', '').replace('./', 'docker/')} ${parts[1]}`;
+                    })
+                    .join('\n')}\n`;
+                const dockerFile = join(target, 'Dockerfile-' + serviceName);
+                await BootstrapUtils.writeTextFile(dockerFile, dockerfileContent);
+                await Promise.all(
+                    volumes.map(async (v) => {
+                        const parts = v.split(':');
+                        await BootstrapUtils.mkdir(join(targetDocker, parts[0]));
+                    }),
+                );
+                const generatedImageName = repository + ':' + serviceName;
+                await BootstrapUtils.createImageUsingExec(target, dockerFile, generatedImageName);
+
+                // aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 172617417348.dkr.ecr.us-east-1.amazonaws.com
+                const absoluteImageUrl = `172617417348.dkr.ecr.us-east-1.amazonaws.com/${generatedImageName}`;
+
+                await BootstrapUtils.exec(`docker tag ${generatedImageName} ${absoluteImageUrl}`);
+                await BootstrapUtils.exec(`docker push ${absoluteImageUrl}`);
+
+                return { image: generatedImageName, volumes: undefined };
+            } else {
+                return { image, volumes };
+            }
+        };
+
+        await Promise.all(
+            (presetData.databases || []).map(async (n) => {
+                const databaseImageInfo = await resolveImage(n.name, presetData.mongoImage, [
+                    vol(`./mongo`, `/userconfig/:ro`),
+                    vol('../data/mongo', '/dbdata:rw'),
+                    vol('../state', '/state'),
+                ]);
+                services[n.name] = {
+                    container_name: n.name,
+                    image: databaseImageInfo.image,
                     user,
-                    command: `bash -c "/bin/bash /userconfig/runServerRecover.sh ${n.brokerHost} && /bin/bash /userconfig/startBroker.sh ${n.brokerHost}"`,
+                    command: `bash -c "/bin/bash /userconfig/mongors.sh ${n.name} & mongod --dbpath=/dbdata --bind_ip=${n.name}"`,
                     stop_signal: 'SIGINT',
-                    ports: n.openBrokerPort ? ['7902:7902'] : [],
-                    restart: 'on-failure:2',
-                    volumes: [
-                        vol(`./bin/bash`, `/bin-mount`),
-                        vol(`../config/${n.name}/resources/`, `/userconfig/resources/`),
-                        vol('../data/' + n.name, '/data:rw'),
-                        vol('../state', '/state'),
-                    ],
+                    ports: resolvePorts(27017, n.openPort),
+                    volumes: databaseImageInfo.volumes,
                 };
-                nodeService.depends_on.push(n.brokerHost);
-            }
-        });
 
-        (presetData.gateways || []).forEach((n) => {
-            services[n.name] = {
-                image: presetData.symbolRestImage,
-                user,
-                command: 'ash -c "npm start /userconfig/rest.json"',
-                stop_signal: 'SIGINT',
-                ports: n.openPort ? ['3000:3000'] : [],
-                volumes: [
-                    vol(`./bin/ash`, `/bin-mount`),
-                    vol(`../config/${n.name}/`, `/userconfig/`),
+                // const databaseInitImageInfo = await resolveImage(n.name, presetData.mongoImage, [
+                //     vol(`./mongo`, `/userconfig/:ro`),
+                //     vol('../data/mongo', '/dbdata:rw'),
+                //     vol('../state', '/state'),
+                // ]);
+                // services[n.name + '-init'] = {
+                //     image: databaseInitImageInfo.image,
+                //     user,
+                //     command: 'bash -c "/bin/bash /userconfig/mongors.sh && touch /state/mongo-is-setup"',
+                //     volumes: databaseInitImageInfo.volumes,
+                //     depends_on: [n.name],
+                // };
+            }),
+        );
+
+        await Promise.all(
+            (presetData.nodes || []).map(async (n) => {
+                const nodeImageData = await resolveImage(n.name, presetData.symbolServerImage, [
+                    vol(`../${workingDir}/${n.name}`, `/symbol-workdir`),
+                    vol(`./userconfig`, `/symbol-commands`),
                     vol('../state', '/state'),
-                    vol(`../data/${n.apiNodeHost}`, `/logs:rw`),
-                    vol(`../config/${n.apiNodeHost}/resources/`, `/usr/local/share/symbol/api-node-config/`),
-                ],
-                depends_on: [n.databaseHost + '-init'],
-                networks: {
-                    default: {
-                        ipv4_address: '172.20.0.10',
+                ]);
+
+                const nodeService = {
+                    image: nodeImageData.image,
+                    user,
+                    command: `bash -c "/bin/bash /symbol-commands/runServerRecover.sh  ${n.name} && /bin/bash /symbol-commands/startServer.sh ${n.name}"`,
+                    stop_signal: 'SIGINT',
+                    depends_on: [] as string[],
+                    restart: 'on-failure:2',
+                    ports: resolvePorts(7900, n.openPort),
+                    volumes: nodeImageData.volumes,
+                };
+                if (n.databaseHost) {
+                    nodeService.depends_on.push(n.databaseHost);
+                }
+                services[n.name] = nodeService;
+                if (n.brokerHost) {
+                    services[n.brokerHost] = {
+                        image: nodeService.image,
+                        user,
+                        command: `bash -c "/bin/bash /symbol-commands/runServerRecover.sh ${n.brokerHost} && /bin/bash /symbol-commands/startBroker.sh ${n.brokerHost}"`,
+                        stop_signal: 'SIGINT',
+                        ports: resolvePorts(7902, n.openBrokerPort),
+                        restart: 'on-failure:2',
+                        volumes: nodeService.volumes,
+                    };
+                    nodeService.depends_on.push(n.brokerHost);
+                }
+            }),
+        );
+
+        await Promise.all(
+            (presetData.gateways || []).map(async (n) => {
+                const gatewayImageInfo = await resolveImage(n.name, presetData.symbolRestImage, [
+                    vol(`../${workingDir}/${n.name}`, `/symbol-workdir`),
+                ]);
+
+                services[n.name] = {
+                    image: gatewayImageInfo.image,
+                    user,
+                    command: 'ash -c "cd /symbol-workdir && npm start --prefix /app/catapult-rest/rest /symbol-workdir/rest.json"',
+                    stop_signal: 'SIGINT',
+                    ports: resolvePorts(3000, n.openPort),
+                    volumes: gatewayImageInfo.volumes,
+                    depends_on: [n.databaseHost],
+                    networks: {
+                        default: {
+                            ipv4_address: '172.20.0.10',
+                        },
                     },
-                },
-            };
-        });
+                };
+            }),
+        );
 
         const dockerCompose: DockerCompose = {
             version: '3',
@@ -146,6 +204,7 @@ export class ComposeService {
 
         await BootstrapUtils.writeYaml(dockerFile, dockerCompose);
         logger.info(`docker-compose.yml file created ${dockerFile}`);
+        return dockerFile;
     }
 
     private async resolveUser(): Promise<string | undefined> {
