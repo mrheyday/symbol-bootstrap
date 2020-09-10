@@ -122,7 +122,7 @@ export class ComposeService {
                 depends_on: [n.databaseHost + '-init'],
                 networks: {
                     default: {
-                        ipv4_address: '172.20.0.10',
+                        ipv4_address: '172.20.0.25',
                     },
                 },
             };
